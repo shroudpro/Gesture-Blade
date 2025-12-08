@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gesture Blade 3D </title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #121212; font-family: 'Segoe UI', sans-serif; user-select: none; }
+        
+        /* === 游戏层 === */
+        #game-container { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1; }
+        
+        /* === 视觉冻结特效层 === */
+        #freeze-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 180, 255, 0.15);
+            pointer-events: none; opacity: 0; transition: opacity 0.5s;
+            z-index: 5;
+            box-shadow: inset 0 0 150px rgba(0, 255, 255, 0.5);
+            display: flex; justify-content: center; align-items: center;
+        }
+        #freeze-text { 
+            font-size: 80px; color: #fff; font-weight: 900; 
+            opacity: 0; transform: scale(0.5); 
+            transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); 
+            text-shadow: 0 0 30px #00ffff; letter-spacing: 10px; font-style: italic;
+        }
+
+        /* === UI 层 === */
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; pointer-events: none; }
+        
+        /* 摄像头预览区 */
+        #camera-feed {
+            position: absolute; bottom: 20px; right: 20px;
+            width: 200px; height: 150px;
+            border-radius: 12px; border: 2px solid rgba(255, 255, 255, 0.2);
+            background: #000; overflow: hidden;
+            transform: scaleX(-1);
+            opacity: 0.8; box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+        }
+        #webcam { width: 100%; height: 100%; object-fit: cover; }
+        
+        /* 分数板 */
+        #score-board {
+            position: absolute; top: 30px; left: 30px;
+            color: #fff; font-weight: bold;
+            text-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+        }
+        #score-val { font-size: 60px; line-height: 1; color: #ffeb3b; }
+        #score-label { font-size: 16px; color: #aaa; letter-spacing: 2px; }
+
+        /* 里程碑特效 */
+        #milestone-text {
+            position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 90px; font-weight: 900; font-style: italic;
+            background: linear-gradient(to bottom, #fff, #ffd700);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-shadow: 0 0 50px rgba(255, 215, 0, 0.8);
+            opacity: 0; pointer-events: none; white-space: nowrap; z-index: 20;
+        }
+        .pop-anim { animation: popText 1.5s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+        @keyframes popText {
+            0% { transform: translate(-50%, -50%) scale(0.2); opacity: 0; }
+            20% { transform: translate(-50%, -50%) scale(1.2); opacity: 1; }
+            100% { transform: translate(-50%, -50%) scale(1.5); opacity: 0; }
+        }
+
+        /* === 布局修复核心区域 === */
+        #message-overlay {
+            position: absolute; 
+            top: 15%; 
+            left: 50%;
+            transform: translate(-50%, 0); 
+            text-align: center; color: white;
+            transition: opacity 0.3s;
+            width: 100%;
+            pointer-events: none;
+        }
+        h1 { margin: 0; font-size: 64px; letter-spacing: 4px; 
+             background: linear-gradient(to right, #00f260, #0575e6);
+             -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+             background-clip: text;
+             text-shadow: 0 0 30px rgba(0,255,100,0.3);
+             margin-bottom: 20px;
+        }
+        .tutorial {
+            margin: 0 auto; background: rgba(20,20,20,0.85); padding: 25px; border-radius: 16px;
+            font-size: 16px; line-height: 1.8; text-align: center; max-width: 600px;
+            border: 1px solid #444; box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+            backdrop-filter: blur(5px);
+        }
+        .item-row { display: flex; justify-content: center; gap: 30px; margin: 15px 0; font-size: 18px; }
+        .loading { font-size: 20px; color: #00ffcc; animation: blink 1s infinite; margin-top: 20px; }
+        @keyframes blink { 50% { opacity: 0.5; } }
+        
+        #cooldown-tip {
+            font-size: 14px; color: #aaa; margin-top: 10px; opacity: 0; transition: opacity 0.5s;
+        }
+    </style>
+    
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.js",
+                "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="game-container"></div>
+    
+    <div id="freeze-overlay">
+        <div id="freeze-text">TIME FREEZE!</div>
+    </div>
+
+    <div id="ui-layer">
+        <div id="score-board">
+            <div id="score-label">SCORE</div>
+            <div id="score-val">0</div>
+        </div>
+        <div id="milestone-text"></div>
+
+        <div id="message-overlay">
+            <h1>GESTURE BLADE</h1>
+            <div id="status-text" class="loading">正在初始化视觉引擎...</div>
+            <div id="tutorial-box" class="tutorial" style="display:none;">
+                <p>👋 <strong>操作指南:</strong> 请允许摄像头权限，伸出<strong>食指</strong>作为光剑。</p>
+                <div class="item-row">
+                    <div>🍉 +10分</div>
+                    <div>💩 -50分</div>
+                </div>
+                <div class="item-row">
+                    <div>❄️ <strong>时间凝滞</strong> (道具)</div>
+                    <div>💣 游戏结束</div>
+                </div>
+                <p style="color:#00ffcc; margin-top:15px; font-weight:bold; font-size: 20px;">👇 切割下方的球体开始游戏 👇</p>
+                <div id="cooldown-tip">系统准备中...</div>
+            </div>
+        </div>
+
+        <div id="camera-feed">
+            <video id="webcam" autoplay playsinline></video>
+        </div>
+    </div>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
+
+    // ==========================================
+    // 0. 辅助函数 & 常量
+    // ==========================================
+    const lerp = (start, end, amt) => (1 - amt) * start + amt * end;
+
+    // ==========================================
+    // 1. 音效系统 (Web Audio API)
+    // ==========================================
+    class SoundManager {
+        constructor() {
+            this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+            this.masterGain = this.ctx.createGain();
+            this.masterGain.gain.value = 0.3; 
+            this.masterGain.connect(this.ctx.destination);
+        }
+
+        playTone(freq, type, duration, vol = 1.0, slideTo = null) {
+            if(this.ctx.state === 'suspended') this.ctx.resume();
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            osc.type = type;
+            osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+            if(slideTo) {
+                osc.frequency.exponentialRampToValueAtTime(slideTo, this.ctx.currentTime + duration);
+            }
+            gain.gain.setValueAtTime(vol, this.ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + duration);
+            osc.connect(gain);
+            gain.connect(this.masterGain);
+            osc.start();
+            osc.stop(this.ctx.currentTime + duration);
+        }
+
+        playSlice() { this.playTone(600 + Math.random()*200, 'sawtooth', 0.15, 0.4, 1200); }
+        playScore() { 
+            this.playTone(880, 'sine', 0.1, 0.3); 
+            setTimeout(() => this.playTone(1108, 'sine', 0.2, 0.3), 80);
+        }
+        playFreeze() {
+            this.playTone(1200, 'sine', 1.5, 0.6, 100); 
+            this.playTone(200, 'square', 1.0, 0.1);
+        }
+        playMilestone() {
+            [440, 554, 659, 880].forEach((f, i) => {
+                setTimeout(() => this.playTone(f, 'triangle', 0.8, 0.4), i * 50);
+            });
+        }
+        playBomb() {
+            const bufferSize = this.ctx.sampleRate * 1.0;
+            const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+            const data = buffer.getChannelData(0);
+            for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+            const noise = this.ctx.createBufferSource();
+            noise.buffer = buffer;
+            const gain = this.ctx.createGain();
+            gain.gain.setValueAtTime(1, this.ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 1);
+            noise.connect(gain);
+            gain.connect(this.masterGain);
+            noise.start();
+        }
+    }
+
+    // ==========================================
+    // 2. 视觉识别模块
+    // ==========================================
+    class VisionSystem {
+        constructor(onHandUpdate) {
+            this.video = document.getElementById('webcam');
+            this.onHandUpdate = onHandUpdate;
+            this.lastVideoTime = -1;
+            this.currX = 0.5; this.currY = 0.5;
+            this.targetX = 0.5; this.targetY = 0.5;
+            this.isTracking = false;
+        }
+
+        async init() {
+            const vision = await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+            );
+            this.handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numHands: 1
+            });
+            await this.startCamera();
+        }
+
+        async startCamera() {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            this.video.srcObject = stream;
+            this.video.addEventListener("loadeddata", () => this.loop());
+        }
+
+        loop() {
+            const now = performance.now();
+            if (this.video.currentTime !== this.lastVideoTime) {
+                const results = this.handLandmarker.detectForVideo(this.video, now);
+                this.lastVideoTime = this.video.currentTime;
+
+                if (results.landmarks && results.landmarks.length > 0) {
+                    const tip = results.landmarks[0][8]; 
+                    this.targetX = 1 - tip.x;
+                    this.targetY = tip.y;
+                    this.isTracking = true;
+                } else {
+                    this.isTracking = false;
+                }
+            }
+
+            if (this.isTracking) {
+                this.currX = lerp(this.currX, this.targetX, 0.3);
+                this.currY = lerp(this.currY, this.targetY, 0.3);
+                this.onHandUpdate({ x: this.currX, y: this.currY });
+            } else {
+                this.onHandUpdate(null);
+            }
+
+            requestAnimationFrame(() => this.loop());
+        }
+    }
+
+    // ==========================================
+    // 3. 刀光渲染器
+    // ==========================================
+    class BladeRenderer {
+        constructor(scene, camera) {
+            this.scene = scene;
+            this.camera = camera;
+            this.points = [];
+            this.maxPoints = 12;
+            
+            const tex = new THREE.CanvasTexture(this.createBladeGradient());
+            this.material = new THREE.MeshBasicMaterial({
+                map: tex, side: THREE.DoubleSide, transparent: true,
+                depthTest: false, blending: THREE.AdditiveBlending
+            });
+            
+            this.geometry = new THREE.BufferGeometry();
+            this.mesh = new THREE.Mesh(this.geometry, this.material);
+            this.mesh.frustumCulled = false;
+            this.scene.add(this.mesh);
+
+            const glowMap = new THREE.CanvasTexture(this.createGlow());
+            this.tip = new THREE.Sprite(new THREE.SpriteMaterial({ 
+                map: glowMap, color: 0xffffff, blending: THREE.AdditiveBlending 
+            }));
+            this.tip.scale.set(1.2, 1.2, 1);
+            this.scene.add(this.tip);
+        }
+
+        createBladeGradient() {
+            const c = document.createElement('canvas');
+            c.width = 128; c.height = 1;
+            const ctx = c.getContext('2d');
+            const g = ctx.createLinearGradient(0,0,128,0);
+            g.addColorStop(0, 'rgba(0, 255, 255, 0)');
+            g.addColorStop(1, 'rgba(255, 255, 255, 0.9)');
+            ctx.fillStyle = g;
+            ctx.fillRect(0,0,128,1);
+            return c;
+        }
+
+        createGlow() {
+            const c = document.createElement('canvas');
+            c.width = 64; c.height = 64;
+            const ctx = c.getContext('2d');
+            const g = ctx.createRadialGradient(32,32,0, 32,32,32);
+            g.addColorStop(0, 'white');
+            g.addColorStop(0.4, 'rgba(0,255,255,0.8)');
+            g.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = g;
+            ctx.fillRect(0,0,64,64);
+            return c;
+        }
+
+        update(worldPos) {
+            if (!worldPos) {
+                if(this.points.length > 0) this.points.shift();
+                this.tip.visible = false;
+            } else {
+                this.points.push(worldPos.clone());
+                if (this.points.length > this.maxPoints) this.points.shift();
+                this.tip.visible = true;
+                this.tip.position.copy(worldPos);
+            }
+
+            if (this.points.length < 2) {
+                this.mesh.visible = false;
+                return;
+            }
+            this.mesh.visible = true;
+
+            const positions = [];
+            const uvs = [];
+            const widthBase = 0.3;
+
+            for (let i = 0; i < this.points.length; i++) {
+                const p = this.points[i];
+                const width = widthBase * (i / this.points.length);
+                let dir = new THREE.Vector3(0,1,0);
+                if (i < this.points.length - 1) {
+                    dir.subVectors(this.points[i+1], p).normalize();
+                } else if (i > 0) {
+                    dir.subVectors(p, this.points[i-1]).normalize();
+                }
+
+                const perp = new THREE.Vector3(-dir.y, dir.x, 0).multiplyScalar(width);
+                positions.push(p.x + perp.x, p.y + perp.y, p.z);
+                positions.push(p.x - perp.x, p.y - perp.y, p.z);
+
+                const u = i / (this.points.length - 1);
+                uvs.push(u, 0);
+                uvs.push(u, 1);
+            }
+
+            this.geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            this.geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+            this.geometry.setIndex(null); 
+            const indices = [];
+            for (let i = 0; i < this.points.length - 1; i++) {
+                const base = i * 2;
+                indices.push(base, base+1, base+2);
+                indices.push(base+1, base+3, base+2);
+            }
+            this.geometry.setIndex(indices);
+            this.geometry.attributes.position.needsUpdate = true;
+            this.geometry.attributes.uv.needsUpdate = true;
+        }
+    }
+
+    // ==========================================
+    // 4. 游戏主控制 (GameLoop)
+    // ==========================================
+    class Game {
+        constructor() {
+            this.score = 0;
+            this.state = 'INIT';
+            this.sound = new SoundManager();
+            this.objects = [];
+            this.difficultyMult = 1.0; 
+            this.timeScale = 1.0; 
+            this.isFrozen = false;
+            this.milestones = [500, 1000, 2000, 5000];
+            this.nextMilestoneIndex = 0;
+            
+            // 2. 交互冷却，防止进入直接触发
+            this.interactionCooldown = 0;
+
+            this.container = document.getElementById('game-container');
+            this.scene = new THREE.Scene();
+            this.camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 100);
+            this.camera.position.z = 8;
+
+            this.renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+            this.renderer.setSize(window.innerWidth, window.innerHeight);
+            this.container.appendChild(this.renderer.domElement);
+
+            this.scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+            const dl = new THREE.DirectionalLight(0xffffff, 0.8);
+            dl.position.set(2,5,5);
+            this.scene.add(dl);
+
+            this.blade = new BladeRenderer(this.scene, this.camera);
+            this.raycaster = new THREE.Raycaster();
+            this.fingerVec = new THREE.Vector2();
+
+            window.addEventListener('resize', () => {
+                this.camera.aspect = window.innerWidth / window.innerHeight;
+                this.camera.updateProjectionMatrix();
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+
+            this.vision = new VisionSystem((pos) => this.handleInput(pos));
+            this.vision.init().then(() => {
+                document.getElementById('status-text').style.display = 'none';
+                document.getElementById('tutorial-box').style.display = 'block';
+                this.enterMenu();
+            });
+
+            this.animate();
+        }
+
+        createEmojiTexture(emoji, bgCol, size=256) {
+            const canvas = document.createElement('canvas');
+            canvas.width = size; canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            const grd = ctx.createRadialGradient(size/2,size/2, size*0.1, size/2,size/2, size/2);
+            grd.addColorStop(0, bgCol);
+            grd.addColorStop(1, '#000');
+            
+            ctx.beginPath();
+            ctx.arc(size/2, size/2, size/2, 0, Math.PI*2);
+            ctx.fillStyle = grd;
+            ctx.fill();
+            
+            ctx.font = `${size*0.6}px serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = '#fff';
+            ctx.fillText(emoji, size/2, size/2 + size*0.05);
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        enterMenu() {
+            this.state = 'MENU';
+            this.clearObjects();
+            
+            this.interactionCooldown = performance.now() + 2000;
+            const tip = document.getElementById('cooldown-tip');
+            tip.style.opacity = 1;
+            setTimeout(() => { tip.style.opacity = 0; }, 2000);
+
+            const configs = [
+                { t:'🟢', l:'EASY', c:'#4CAF50', x:-3, v:0.5 },
+                { t:'🔵', l:'NORMAL', c:'#2196F3', x:0, v:0.75 },
+                { t:'🔴', l:'HARD', c:'#F44336', x:3, v:1.0 }
+            ];
+            configs.forEach(cfg => {
+                const s = new THREE.Sprite(new THREE.SpriteMaterial({ 
+                    map: this.createEmojiTexture(cfg.t, cfg.c) 
+                }));
+                s.position.set(cfg.x, -2.5, 0);
+                s.scale.set(2,2,1);
+                s.userData = { type:'MENU', diff: cfg.v, vel: new THREE.Vector3(0,0,0) };
+                this.scene.add(s);
+                this.objects.push(s);
+            });
+        }
+
+        startGame(diff) {
+            this.difficultyMult = diff;
+            this.state = 'PLAYING';
+            this.score = 0;
+            this.nextMilestoneIndex = 0;
+            this.clearObjects();
+            
+            document.getElementById('score-val').innerText = '0';
+            document.getElementById('tutorial-box').style.display = 'none';
+            document.getElementById('message-overlay').style.opacity = '0';
+        }
+
+        gameOver() {
+            this.state = 'GAMEOVER';
+            const msg = document.getElementById('message-overlay');
+            msg.style.opacity = '1';
+            msg.innerHTML = `
+                <h1 style="margin-top:20vh">GAME OVER</h1>
+                <p style="font-size:30px">最终得分: ${this.score}</p>
+                <p class="loading">正在重置...</p>
+            `;
+            this.clearObjects();
+            setTimeout(() => location.reload(), 3000);
+        }
+
+        clearObjects() {
+            this.objects.forEach(o => this.scene.remove(o));
+            this.objects = [];
+        }
+
+        spawnObject() {
+            if (this.state !== 'PLAYING') return;
+
+            if (Math.random() < 0.02 * this.difficultyMult) {
+                const rand = Math.random();
+                let type;
+                if (rand < 0.03) type = {e:'❄️', t:'FREEZE', s:0, c:'#00bbff'};
+                else if (rand < 0.08) type = {e:'💣', t:'BOMB', s:0, c:'#333'};
+                else if (rand < 0.12) type = {e:'💩', t:'POOP', s:-50, c:'#8B4513'};
+                else {
+                    const fruits = [
+                        {e:'🍉', t:'FRUIT', s:10, c:'#ff3333'},
+                        {e:'🍎', t:'FRUIT', s:10, c:'#ff0000'},
+                        {e:'🍊', t:'FRUIT', s:10, c:'#ffa500'},
+                        {e:'🍇', t:'FRUIT', s:10, c:'#800080'},
+                        {e:'🍓', t:'FRUIT', s:10, c:'#ff69b4'}
+                    ];
+                    type = fruits[Math.floor(Math.random() * fruits.length)];
+                }
+
+                const s = new THREE.Sprite(new THREE.SpriteMaterial({ 
+                    map: this.createEmojiTexture(type.e, type.c) 
+                }));
+                
+                const startX = (Math.random()-0.5)*8;
+                s.position.set(startX, -6, 0);
+                s.scale.set(1.2, 1.2, 1);
+
+                // --- 物理修正开始 ---
+                
+                // 1. 获取重力 (困难模式下重力翻倍)
+                const gravityFactors = {
+                    0.5: 0.002,
+                    0.75: 0.003,
+                    1.0: 0.004
+                };
+                const gravity = gravityFactors[this.difficultyMult] || 0.003;
+
+                // 2. 修正垂直速度(Vy)
+                // 之前代码是固定的 baseSpeed，导致重力变大时高度不够
+                // 现在将速度与 difficultyMult 挂钩，确保不同难度下能抛到相似的高度
+                // 公式：(基础 + 随机) * (修正因子)
+                const vy = (0.20 + Math.random() * 0.06) * (0.6 + 0.5 * this.difficultyMult);
+
+                // 3. 修正水平速度(Vx)
+                // 因为重力变大，飞行时间变短，水平速度也需要稍微增加，否则飞不到屏幕中间
+                const targetX = (Math.random()-0.5)*4;
+                const vx = (targetX - startX) * 0.01 * (0.6 + 0.5 * this.difficultyMult); 
+                
+                // --- 物理修正结束 ---
+
+                s.userData = {
+                    type: type.t,
+                    score: type.s,
+                    velocity: new THREE.Vector3(vx, vy, 0),
+                    rot: (Math.random()-0.5)*0.1,
+                    gravity: gravity
+                };
+                this.scene.add(s);
+                this.objects.push(s);
+            }
+        }
+
+        triggerFreeze() {
+            if(this.isFrozen) return;
+            this.isFrozen = true;
+            this.timeScale = 0.2; 
+            this.sound.playFreeze();
+
+            const dom = document.getElementById('freeze-overlay');
+            const txt = document.getElementById('freeze-text');
+            dom.style.opacity = 1;
+            txt.style.opacity = 1; txt.style.transform = "scale(1)";
+
+            setTimeout(() => {
+                this.timeScale = 1.0;
+                this.isFrozen = false;
+                dom.style.opacity = 0;
+                txt.style.opacity = 0; txt.style.transform = "scale(0.5)";
+            }, 3000);
+        }
+
+        checkMilestone() {
+            if (this.nextMilestoneIndex < this.milestones.length) {
+                const target = this.milestones[this.nextMilestoneIndex];
+                if (this.score >= target) {
+                    const txt = document.getElementById('milestone-text');
+                    txt.innerText = `${target} POINTS!`;
+                    txt.classList.remove('pop-anim');
+                    void txt.offsetWidth; 
+                    txt.classList.add('pop-anim');
+                    
+                    this.sound.playMilestone();
+                    this.nextMilestoneIndex++;
+                }
+            }
+        }
+
+        handleInput(pos) {
+            if(!pos) {
+                this.blade.update(null);
+                return;
+            }
+
+            const x = (pos.x * 2) - 1;
+            const y = -(pos.y * 2) + 1;
+            this.fingerVec.set(x, y);
+
+            this.raycaster.setFromCamera(this.fingerVec, this.camera);
+            const targetZ = 0;
+            const vec = new THREE.Vector3();
+            vec.copy(this.raycaster.ray.origin).add(
+                this.raycaster.ray.direction.multiplyScalar((targetZ - this.raycaster.ray.origin.z) / this.raycaster.ray.direction.z)
+            );
+            
+            this.blade.update(vec);
+
+            if (performance.now() < this.interactionCooldown) return;
+
+            const hits = this.raycaster.intersectObjects(this.objects);
+            if(hits.length > 0) {
+                const obj = hits[0].object;
+                const type = obj.userData.type;
+                
+                this.scene.remove(obj);
+                this.objects.splice(this.objects.indexOf(obj), 1);
+                this.sound.playSlice();
+
+                if (type === 'MENU') {
+                    this.startGame(obj.userData.diff);
+                } else if (type === 'BOMB') {
+                    this.sound.playBomb();
+                    this.gameOver();
+                } else if (type === 'FREEZE') {
+                    this.triggerFreeze();
+                } else {
+                    if(obj.userData.score > 0) this.sound.playScore();
+                    else this.sound.playBomb();
+                    
+                    this.score += obj.userData.score;
+                    document.getElementById('score-val').innerText = this.score;
+                    this.checkMilestone();
+                }
+            }
+        }
+
+        animate() {
+            requestAnimationFrame(() => this.animate());
+
+            const dt = 1/60 * this.timeScale;
+        
+            for(let i=this.objects.length-1; i>=0; i--) {
+                const o = this.objects[i];
+                if(o.userData.type === 'MENU') {
+                    o.material.rotation += 0.01; 
+                    continue;
+                }
+                
+                o.position.x += o.userData.velocity.x * this.timeScale; 
+                o.position.y += o.userData.velocity.y * this.timeScale;
+                
+                o.userData.velocity.y -= o.userData.gravity * this.timeScale;
+                o.material.rotation += o.userData.rot * this.timeScale;
+
+                if(o.position.y < -7) {
+                    this.scene.remove(o);
+                    this.objects.splice(i, 1);
+                }
+            }
+        
+            this.spawnObject();
+            this.renderer.render(this.scene, this.camera);
+        }
+
+    }
+
+    window.onload = () => new Game();
+</script>
+</body>
+</html>
